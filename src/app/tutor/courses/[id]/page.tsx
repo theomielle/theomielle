@@ -9,6 +9,7 @@ import {
   Trash2,
   Edit,
   Video,
+  FileText,
   Settings,
   Layers,
   Eye,
@@ -20,9 +21,13 @@ import {
 interface Lesson {
   id: string
   title: string
-  video_url: string
+  video_url: string | null
+  embed_type: 'youtube' | 'pdf' | 'none' | null
+  embed_url: string | null
   duration: string | null
   transcript_pdf: string | null
+  resource_url: string | null
+  resource_button_text: string | null
   description: string | null
   order_index: number
 }
@@ -39,6 +44,7 @@ interface Course {
   title: string
   description: string
   category: string
+  category_id?: string | null
   instructor_name: string
   is_published: boolean
   image_url: string | null
@@ -52,6 +58,12 @@ interface Enrollment {
   enrolled_at: string
 }
 
+interface Category {
+  id: string
+  name: string
+  slug: string
+}
+
 export default function TutorCourseDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id: courseId } = use(params)
   const supabase = createClient()
@@ -59,6 +71,7 @@ export default function TutorCourseDetailPage({ params }: { params: Promise<{ id
   const [course, setCourse] = useState<Course | null>(null)
   const [modules, setModules] = useState<Module[]>([])
   const [enrollments, setEnrollments] = useState<Enrollment[]>([])
+  const [categories, setCategories] = useState<Category[]>([])
   const [activeTab, setActiveTab] = useState<'curriculum' | 'students' | 'settings'>('curriculum')
   const [loading, setLoading] = useState(true)
 
@@ -74,6 +87,10 @@ export default function TutorCourseDetailPage({ params }: { params: Promise<{ id
   const [editImageUrl, setEditImageUrl] = useState('')
   const [editPrice, setEditPrice] = useState<number>(0)
 
+  // State Modal Kelola Kategori
+  const [showAddCatModal, setShowAddCatModal] = useState(false)
+  const [newCategoryName, setNewCategoryName] = useState('')
+
   // State Modal Bab
   const [showModuleModal, setShowModuleModal] = useState(false)
   const [moduleTitle, setModuleTitle] = useState('')
@@ -85,9 +102,11 @@ export default function TutorCourseDetailPage({ params }: { params: Promise<{ id
   const [activeLessonId, setActiveLessonId] = useState<string | null>(null)
   
   const [lessonTitle, setLessonTitle] = useState('')
-  const [videoUrl, setVideoUrl] = useState('')
+  const [embedType, setEmbedType] = useState<'youtube' | 'pdf' | 'none'>('youtube')
+  const [embedUrl, setEmbedUrl] = useState('')
   const [duration, setDuration] = useState('')
-  const [transcriptPdf, setTranscriptPdf] = useState('')
+  const [resourceUrl, setResourceUrl] = useState('')
+  const [resourceButtonText, setResourceButtonText] = useState('Unduh Modul PDF')
   const [lessonDesc, setLessonDesc] = useState('')
 
   // State Tambah Siswa Manual
@@ -96,7 +115,13 @@ export default function TutorCourseDetailPage({ params }: { params: Promise<{ id
   useEffect(() => {
     fetchCourseDetail()
     fetchEnrollments()
+    fetchCategories()
   }, [courseId])
+
+  const fetchCategories = async () => {
+    const { data } = await supabase.from('course_categories').select('*').order('name')
+    if (data) setCategories(data)
+  }
 
   const fetchCourseDetail = async () => {
     setLoading(true)
@@ -121,7 +146,7 @@ export default function TutorCourseDetailPage({ params }: { params: Promise<{ id
       .select(`
         id, title, order_index,
         course_lessons (
-          id, title, video_url, duration, transcript_pdf, description, order_index
+          id, title, video_url, embed_type, embed_url, duration, transcript_pdf, resource_url, resource_button_text, description, order_index
         )
       `)
       .eq('course_id', courseId)
@@ -173,7 +198,6 @@ export default function TutorCourseDetailPage({ params }: { params: Promise<{ id
 
     if (sourceLessonId === targetLessonId) return
 
-    // Clone data modul untuk reorder lokal instan
     const newModules: Module[] = JSON.parse(JSON.stringify(modules))
     const sourceMod = newModules.find((m) => m.id === sourceModuleId)
     const targetMod = newModules.find((m) => m.id === targetModuleId)
@@ -183,10 +207,8 @@ export default function TutorCourseDetailPage({ params }: { params: Promise<{ id
     const sourceLessonIndex = sourceMod.course_lessons.findIndex((l) => l.id === sourceLessonId)
     if (sourceLessonIndex === -1) return
 
-    // Ambil materi yang digeser
     const [movedLesson] = sourceMod.course_lessons.splice(sourceLessonIndex, 1)
 
-    // Sisipkan ke posisi baru
     if (targetLessonId) {
       const targetIndex = targetMod.course_lessons.findIndex((l) => l.id === targetLessonId)
       targetMod.course_lessons.splice(targetIndex, 0, movedLesson)
@@ -194,10 +216,8 @@ export default function TutorCourseDetailPage({ params }: { params: Promise<{ id
       targetMod.course_lessons.push(movedLesson)
     }
 
-    // Perbarui state lokal secara cepat
     setModules(newModules)
 
-    // Simpan posisi dan urutan baru ke Supabase
     const updates: { id: string; module_id: string; order_index: number }[] = []
     newModules.forEach((mod) => {
       mod.course_lessons.forEach((les, idx) => {
@@ -252,14 +272,68 @@ export default function TutorCourseDetailPage({ params }: { params: Promise<{ id
     fetchEnrollments()
   }
 
+  // --- KELOLA KATEGORI: TAMBAH & HAPUS ---
+  const handleCreateCategory = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!newCategoryName.trim()) return
+
+    const slug = newCategoryName.toLowerCase().trim().replace(/\s+/g, '-')
+
+    const { data, error } = await supabase
+      .from('course_categories')
+      .insert({
+        name: newCategoryName.trim(),
+        slug: slug,
+      })
+      .select()
+      .single()
+
+    if (error) {
+      alert('Gagal menambah kategori atau kategori sudah ada.')
+      return
+    }
+
+    if (data) {
+      setCategories([...categories, data])
+      setEditCategory(data.name)
+      setNewCategoryName('')
+      alert(`Kategori "${data.name}" berhasil ditambahkan!`)
+    }
+  }
+
+  const handleDeleteCategory = async (catId: string, catName: string) => {
+    if (!confirm(`Hapus kategori "${catName}"?`)) return
+
+    const { error } = await supabase
+      .from('course_categories')
+      .delete()
+      .eq('id', catId)
+
+    if (error) {
+      alert('Gagal menghapus kategori. Pastikan tidak ada kelas yang menggunakan kategori ini.')
+      return
+    }
+
+    const updatedList = categories.filter((c) => c.id !== catId)
+    setCategories(updatedList)
+
+    if (editCategory === catName) {
+      setEditCategory(updatedList.length > 0 ? updatedList[0].name : 'Kuliah')
+    }
+    alert(`Kategori "${catName}" telah dihapus.`)
+  }
+
   const handleUpdateCourseSettings = async (e: React.FormEvent) => {
     e.preventDefault()
+    const selectedCatObj = categories.find((c) => c.name === editCategory)
+    
     const { data } = await supabase
       .from('courses')
       .update({
         title: editTitle,
         description: editDesc,
         category: editCategory,
+        category_id: selectedCatObj ? selectedCatObj.id : null,
         is_published: editIsPublished,
         image_url: editImageUrl || null,
         price: editPrice,
@@ -299,9 +373,11 @@ export default function TutorCourseDetailPage({ params }: { params: Promise<{ id
     setActiveModuleId(moduleId)
     setActiveLessonId(null)
     setLessonTitle('')
-    setVideoUrl('')
+    setEmbedType('youtube')
+    setEmbedUrl('')
     setDuration('')
-    setTranscriptPdf('')
+    setResourceUrl('')
+    setResourceButtonText('Unduh Modul PDF')
     setLessonDesc('')
     setLessonModalMode('add')
     setShowLessonModal(true)
@@ -311,9 +387,11 @@ export default function TutorCourseDetailPage({ params }: { params: Promise<{ id
     setActiveModuleId(moduleId)
     setActiveLessonId(lesson.id)
     setLessonTitle(lesson.title)
-    setVideoUrl(lesson.video_url || '')
+    setEmbedType(lesson.embed_type || (lesson.video_url ? 'youtube' : 'none'))
+    setEmbedUrl(lesson.embed_url || lesson.video_url || '')
     setDuration(lesson.duration || '')
-    setTranscriptPdf(lesson.transcript_pdf || '')
+    setResourceUrl(lesson.resource_url || lesson.transcript_pdf || '')
+    setResourceButtonText(lesson.resource_button_text || 'Unduh Modul PDF')
     setLessonDesc(lesson.description || '')
     setLessonModalMode('edit')
     setShowLessonModal(true)
@@ -321,7 +399,19 @@ export default function TutorCourseDetailPage({ params }: { params: Promise<{ id
 
   const handleSaveLesson = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (!lessonTitle || !videoUrl) return
+    if (!lessonTitle) return
+
+    const payload = {
+      title: lessonTitle,
+      embed_type: embedType,
+      embed_url: embedUrl || null,
+      video_url: embedType === 'youtube' ? embedUrl : null,
+      duration: duration || null,
+      resource_url: resourceUrl || null,
+      transcript_pdf: resourceUrl || null,
+      resource_button_text: resourceButtonText || 'Unduh Modul PDF',
+      description: lessonDesc || null,
+    }
 
     if (lessonModalMode === 'add') {
       const targetModule = modules.find((m) => m.id === activeModuleId)
@@ -329,12 +419,8 @@ export default function TutorCourseDetailPage({ params }: { params: Promise<{ id
 
       const { error } = await supabase.from('course_lessons').insert({
         module_id: activeModuleId,
-        title: lessonTitle,
-        video_url: videoUrl,
-        duration: duration || null,
-        transcript_pdf: transcriptPdf || null,
-        description: lessonDesc || null,
         order_index: nextOrder,
+        ...payload,
       })
 
       if (!error) {
@@ -346,13 +432,7 @@ export default function TutorCourseDetailPage({ params }: { params: Promise<{ id
     } else {
       const { error } = await supabase
         .from('course_lessons')
-        .update({
-          title: lessonTitle,
-          video_url: videoUrl,
-          duration: duration || null,
-          transcript_pdf: transcriptPdf || null,
-          description: lessonDesc || null,
-        })
+        .update(payload)
         .eq('id', activeLessonId)
 
       if (!error) {
@@ -371,7 +451,7 @@ export default function TutorCourseDetailPage({ params }: { params: Promise<{ id
   }
 
   const handleDeleteLesson = async (lessonId: string) => {
-    if (!confirm('Hapus materi video ini?')) return
+    if (!confirm('Hapus materi ini?')) return
     await supabase.from('course_lessons').delete().eq('id', lessonId)
     fetchCourseDetail()
   }
@@ -457,7 +537,7 @@ export default function TutorCourseDetailPage({ params }: { params: Promise<{ id
       {activeTab === 'curriculum' && (
         <div className="space-y-4">
           <div className="flex justify-between items-center">
-            <h3 className="text-sm font-black text-slate-900">Daftar Bab & Video Pembelajaran</h3>
+            <h3 className="text-sm font-black text-slate-900">Daftar Bab & Materi Pembelajaran</h3>
             <button
               onClick={() => setShowModuleModal(true)}
               className="inline-flex items-center gap-2 px-4 py-2.5 rounded-2xl bg-slate-900 text-white text-xs font-bold hover:bg-slate-800"
@@ -492,7 +572,7 @@ export default function TutorCourseDetailPage({ params }: { params: Promise<{ id
                       onClick={() => openAddLessonModal(module.id)}
                       className="inline-flex items-center gap-1 px-3 py-1.5 rounded-xl bg-slate-900 text-white text-[11px] font-bold hover:bg-slate-800"
                     >
-                      <Plus className="w-3.5 h-3.5" /> Tambah Video
+                      <Plus className="w-3.5 h-3.5" /> Tambah Materi
                     </button>
                     <button
                       onClick={() => handleDeleteModule(module.id)}
@@ -523,9 +603,18 @@ export default function TutorCourseDetailPage({ params }: { params: Promise<{ id
                         <div className="flex items-center gap-3 min-w-0">
                           <GripVertical className="w-4 h-4 text-slate-300 hover:text-slate-600 shrink-0" />
                           <span className="text-slate-400 text-xs font-bold w-4">{lesIndex + 1}.</span>
-                          <Video className="w-4 h-4 text-indigo-600 shrink-0" />
+                          {lesson.embed_type === 'pdf' ? (
+                            <FileText className="w-4 h-4 text-rose-600 shrink-0" />
+                          ) : (
+                            <Video className="w-4 h-4 text-indigo-600 shrink-0" />
+                          )}
                           <div className="min-w-0">
-                            <span className="text-xs font-bold text-slate-800 block truncate">{lesson.title}</span>
+                            <div className="flex items-center gap-2">
+                              <span className="text-xs font-bold text-slate-800 truncate">{lesson.title}</span>
+                              <span className="text-[9px] px-2 py-0.5 rounded-full bg-slate-100 font-extrabold uppercase text-slate-600 shrink-0">
+                                {lesson.embed_type || 'youtube'}
+                              </span>
+                            </div>
                             {lesson.description && (
                               <span className="text-[11px] text-slate-500 block truncate">{lesson.description}</span>
                             )}
@@ -665,17 +754,39 @@ export default function TutorCourseDetailPage({ params }: { params: Promise<{ id
                   className="w-full px-4 py-2.5 rounded-2xl bg-slate-50 border border-slate-200 text-xs text-slate-900"
                 />
               </div>
+
+              {/* KATEGORI DENGAN TOMBOL KELOLA KATEGORI */}
               <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">Kategori</label>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="block text-xs font-bold text-slate-700">Kategori Kelas</label>
+                  <button
+                    type="button"
+                    onClick={() => setShowAddCatModal(true)}
+                    className="text-[11px] font-bold text-indigo-600 hover:text-indigo-800 hover:underline flex items-center gap-1 cursor-pointer"
+                  >
+                    + Kelola & Tambah Kategori
+                  </button>
+                </div>
+
                 <select
                   value={editCategory}
                   onChange={(e) => setEditCategory(e.target.value)}
-                  className="w-full px-3 py-2.5 rounded-2xl bg-slate-50 border border-slate-200 text-xs text-slate-900"
+                  className="w-full px-3 py-2.5 rounded-2xl bg-slate-50 border border-slate-200 text-xs text-slate-900 focus:outline-none focus:border-slate-900"
                 >
-                  <option value="Kuliah">Kuliah</option>
-                  <option value="Matematika">Matematika</option>
-                  <option value="Olimpiade">Olimpiade</option>
-                  <option value="SMA">SMA</option>
+                  {categories.length > 0 ? (
+                    categories.map((cat) => (
+                      <option key={cat.id} value={cat.name}>
+                        {cat.name}
+                      </option>
+                    ))
+                  ) : (
+                    <>
+                      <option value="Kuliah">Kuliah</option>
+                      <option value="Matematika">Matematika</option>
+                      <option value="Olimpiade">Olimpiade</option>
+                      <option value="SMA">SMA</option>
+                    </>
+                  )}
                 </select>
               </div>
             </div>
@@ -713,10 +824,77 @@ export default function TutorCourseDetailPage({ params }: { params: Promise<{ id
               />
             </div>
 
-            <button type="submit" className="px-5 py-2.5 rounded-2xl bg-slate-900 text-white text-xs font-bold">
+            <button type="submit" className="px-5 py-2.5 rounded-2xl bg-slate-900 text-white text-xs font-bold cursor-pointer hover:bg-slate-800">
               Simpan Perubahan
             </button>
           </form>
+        </div>
+      )}
+
+      {/* MODAL KELOLA & TAMBAH / HAPUS KATEGORI */}
+      {showAddCatModal && (
+        <div className="fixed inset-0 z-50 bg-slate-950/40 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl border border-slate-200 max-w-md w-full p-6 shadow-xl space-y-5 max-h-[85vh] overflow-y-auto">
+            <div className="space-y-1">
+              <h3 className="text-base font-black text-slate-900">Kelola Kategori Kelas</h3>
+              <p className="text-xs text-slate-500">Tambah kategori baru atau hapus kategori yang sudah tidak digunakan.</p>
+            </div>
+
+            {/* Form Tambah Kategori */}
+            <form onSubmit={handleCreateCategory} className="space-y-3 p-4 bg-slate-50 rounded-2xl border border-slate-200">
+              <label className="block text-xs font-bold text-slate-700">Tambah Kategori Baru</label>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  required
+                  placeholder="Nama Kategori (misal: UTBK)"
+                  value={newCategoryName}
+                  onChange={(e) => setNewCategoryName(e.target.value)}
+                  className="flex-1 px-3 py-2 rounded-xl bg-white border border-slate-200 text-xs text-slate-900 focus:outline-none focus:border-slate-900"
+                />
+                <button
+                  type="submit"
+                  className="px-4 py-2 bg-slate-900 text-white rounded-xl text-xs font-bold hover:bg-slate-800 cursor-pointer shrink-0"
+                >
+                  + Tambah
+                </button>
+              </div>
+            </form>
+
+            {/* Daftar Kategori dengan Tombol Hapus */}
+            <div className="space-y-2">
+              <label className="block text-xs font-bold text-slate-700">Daftar Kategori Tersedia</label>
+              <div className="divide-y divide-slate-100 border border-slate-200 rounded-2xl overflow-hidden bg-white max-h-52 overflow-y-auto">
+                {categories.length === 0 ? (
+                  <div className="p-4 text-center text-xs text-slate-400">Belum ada kategori kustom.</div>
+                ) : (
+                  categories.map((cat) => (
+                    <div key={cat.id} className="p-3 flex items-center justify-between gap-2 hover:bg-slate-50 transition-colors">
+                      <span className="text-xs font-bold text-slate-800">{cat.name}</span>
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteCategory(cat.id, cat.name)}
+                        className="p-1.5 rounded-lg bg-rose-50 text-rose-600 hover:bg-rose-100 transition-colors cursor-pointer"
+                        title="Hapus Kategori"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+
+            <div className="flex justify-end pt-2">
+              <button
+                type="button"
+                onClick={() => setShowAddCatModal(false)}
+                className="px-5 py-2.5 bg-slate-900 text-white rounded-2xl text-xs font-bold hover:bg-slate-800 cursor-pointer"
+              >
+                Selesai
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
@@ -735,21 +913,22 @@ export default function TutorCourseDetailPage({ params }: { params: Promise<{ id
                 className="w-full px-4 py-2.5 rounded-2xl bg-slate-50 border border-slate-200 text-xs text-slate-900"
               />
               <div className="flex justify-end gap-2">
-                <button type="button" onClick={() => setShowModuleModal(false)} className="px-4 py-2 bg-slate-100 rounded-xl text-xs font-bold">Batal</button>
-                <button type="submit" className="px-4 py-2 bg-slate-900 text-white rounded-xl text-xs font-bold">Simpan</button>
+                <button type="button" onClick={() => setShowModuleModal(false)} className="px-4 py-2 bg-slate-100 rounded-xl text-xs font-bold cursor-pointer">Batal</button>
+                <button type="submit" className="px-4 py-2 bg-slate-900 text-white rounded-xl text-xs font-bold cursor-pointer">Simpan</button>
               </div>
             </form>
           </div>
         </div>
       )}
 
-      {/* Modal Tambah / Edit Video Materi */}
+      {/* Modal Tambah / Edit Materi (Lengkap dengan Embed & Custom Button) */}
       {showLessonModal && (
         <div className="fixed inset-0 z-50 bg-slate-950/40 backdrop-blur-xs flex items-center justify-center p-4">
           <div className="bg-white rounded-3xl border border-slate-200 max-w-md w-full p-6 shadow-xl space-y-4 max-h-[90vh] overflow-y-auto">
             <h3 className="text-base font-black text-slate-900">
-              {lessonModalMode === 'add' ? 'Tambah Video Materi' : 'Edit Video Materi'}
+              {lessonModalMode === 'add' ? 'Tambah Materi Pembelajaran' : 'Edit Materi Pembelajaran'}
             </h3>
+
             <form onSubmit={handleSaveLesson} className="space-y-4">
               <div>
                 <label className="block text-xs font-bold text-slate-700 mb-1">Judul Materi</label>
@@ -763,37 +942,74 @@ export default function TutorCourseDetailPage({ params }: { params: Promise<{ id
                 />
               </div>
 
+              {/* Pilihan Jenis Embed */}
+              <div className="space-y-1.5">
+                <label className="block text-xs font-bold text-slate-700">Tipe Media Embed</label>
+                <div className="flex gap-4 p-2 bg-slate-50 rounded-2xl border border-slate-200">
+                  {(['youtube', 'pdf', 'none'] as const).map((type) => (
+                    <label key={type} className="flex items-center gap-2 cursor-pointer capitalize text-xs font-bold text-slate-700">
+                      <input
+                        type="radio"
+                        name="embedType"
+                        value={type}
+                        checked={embedType === type}
+                        onChange={(e) => setEmbedType(e.target.value as any)}
+                        className="accent-slate-900"
+                      />
+                      {type === 'none' ? 'Tanpa Embed' : type.toUpperCase()}
+                    </label>
+                  ))}
+                </div>
+              </div>
+
+              {/* Input Link Embed */}
+              {embedType !== 'none' && (
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">
+                    {embedType === 'youtube' ? 'URL Embed YouTube' : 'URL File PDF'}
+                  </label>
+                  <input
+                    type="url"
+                    required
+                    value={embedUrl}
+                    onChange={(e) => setEmbedUrl(e.target.value)}
+                    placeholder={embedType === 'youtube' ? 'https://www.youtube.com/embed/...' : 'https://.../modul.pdf'}
+                    className="w-full px-4 py-2.5 rounded-2xl bg-slate-50 border border-slate-200 text-xs text-slate-900"
+                  />
+                </div>
+              )}
+
               <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">URL YouTube Video</label>
+                <label className="block text-xs font-bold text-slate-700 mb-1">Durasi (Opsional)</label>
                 <input
                   type="text"
-                  required
-                  placeholder="https://www.youtube.com/watch?v=..."
-                  value={videoUrl}
-                  onChange={(e) => setVideoUrl(e.target.value)}
+                  placeholder="Contoh: 08:15"
+                  value={duration}
+                  onChange={(e) => setDuration(e.target.value)}
                   className="w-full px-4 py-2.5 rounded-2xl bg-slate-50 border border-slate-200 text-xs text-slate-900"
                 />
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
+              {/* Link Lampiran & Teks Tombol Kustom */}
+              <div className="space-y-3 p-3 bg-slate-50/80 rounded-2xl border border-slate-100">
                 <div>
-                  <label className="block text-xs font-bold text-slate-700 mb-1">Durasi (Opsional)</label>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">Link Lampiran / Modul (Opsional)</label>
                   <input
-                    type="text"
-                    placeholder="Contoh: 08:15"
-                    value={duration}
-                    onChange={(e) => setDuration(e.target.value)}
-                    className="w-full px-4 py-2.5 rounded-2xl bg-slate-50 border border-slate-200 text-xs text-slate-900"
+                    type="url"
+                    value={resourceUrl}
+                    onChange={(e) => setResourceUrl(e.target.value)}
+                    placeholder="https://..."
+                    className="w-full px-4 py-2.5 rounded-2xl bg-white border border-slate-200 text-xs text-slate-900"
                   />
                 </div>
                 <div>
-                  <label className="block text-xs font-bold text-slate-700 mb-1">Link File PDF Modul</label>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">Teks Tombol Lampiran</label>
                   <input
                     type="text"
-                    placeholder="https://...file.pdf"
-                    value={transcriptPdf}
-                    onChange={(e) => setTranscriptPdf(e.target.value)}
-                    className="w-full px-4 py-2.5 rounded-2xl bg-slate-50 border border-slate-200 text-xs text-slate-900"
+                    value={resourceButtonText}
+                    onChange={(e) => setResourceButtonText(e.target.value)}
+                    placeholder="Contoh: Unduh Modul PDF / Buka Applet GeoGebra"
+                    className="w-full px-4 py-2.5 rounded-2xl bg-white border border-slate-200 text-xs text-slate-900"
                   />
                 </div>
               </div>
@@ -802,7 +1018,7 @@ export default function TutorCourseDetailPage({ params }: { params: Promise<{ id
                 <label className="block text-xs font-bold text-slate-700 mb-1">Deskripsi Materi</label>
                 <textarea
                   rows={3}
-                  placeholder="Penjelasan singkat mengenai materi video ini..."
+                  placeholder="Penjelasan singkat mengenai materi ini..."
                   value={lessonDesc}
                   onChange={(e) => setLessonDesc(e.target.value)}
                   className="w-full px-4 py-2.5 rounded-2xl bg-slate-50 border border-slate-200 text-xs text-slate-900 resize-none"
@@ -813,13 +1029,13 @@ export default function TutorCourseDetailPage({ params }: { params: Promise<{ id
                 <button
                   type="button"
                   onClick={() => setShowLessonModal(false)}
-                  className="px-4 py-2.5 bg-slate-100 rounded-2xl text-xs font-bold text-slate-600 hover:bg-slate-200"
+                  className="px-4 py-2.5 bg-slate-100 rounded-2xl text-xs font-bold text-slate-600 hover:bg-slate-200 cursor-pointer"
                 >
                   Batal
                 </button>
                 <button
                   type="submit"
-                  className="px-5 py-2.5 bg-slate-900 text-white rounded-2xl text-xs font-bold hover:bg-slate-800"
+                  className="px-5 py-2.5 bg-slate-900 text-white rounded-2xl text-xs font-bold hover:bg-slate-800 cursor-pointer"
                 >
                   {lessonModalMode === 'add' ? 'Simpan Materi' : 'Simpan Perubahan'}
                 </button>

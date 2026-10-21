@@ -17,15 +17,20 @@ import {
   ShieldCheck,
   Clock,
   Tag,
-  Gift
+  Gift,
+  ExternalLink
 } from 'lucide-react'
 
 interface Lesson {
   id: string
   title: string
-  video_url: string
+  video_url: string | null
+  embed_type: 'youtube' | 'pdf' | 'none' | null
+  embed_url: string | null
   duration: string | null
   transcript_pdf: string | null
+  resource_url: string | null
+  resource_button_text: string | null
   description: string | null
   order_index: number
 }
@@ -70,6 +75,7 @@ export default function StudentCoursePage({ params }: { params: Promise<{ id: st
     const { data: { user } } = await supabase.auth.getUser()
     const userEmail = user?.email
 
+    // 1. Fetch Informasi Kelas
     const { data: courseData } = await supabase
       .from('courses')
       .select('*')
@@ -78,7 +84,8 @@ export default function StudentCoursePage({ params }: { params: Promise<{ id: st
 
     if (courseData) setCourse(courseData)
 
-    if (userEmail) {
+    // 2. Cek Akses (Eceran atau Langganan Premium/Combined)
+    if (user && userEmail) {
       const { data: enrollmentData } = await supabase
         .from('course_enrollments')
         .select('*')
@@ -86,7 +93,16 @@ export default function StudentCoursePage({ params }: { params: Promise<{ id: st
         .eq('student_email', userEmail)
         .maybeSingle()
 
-      if (enrollmentData && enrollmentData.status === 'active') {
+      const { data: subData } = await supabase
+        .from('user_subscriptions')
+        .select('tier, status')
+        .eq('user_id', user.id)
+        .eq('status', 'active')
+        .maybeSingle()
+
+      const hasSubscriptionAccess = subData && (subData.tier === 'premium' || subData.tier === 'combined')
+
+      if ((enrollmentData && enrollmentData.status === 'active') || hasSubscriptionAccess) {
         setIsEnrolled(true)
         setEnrollmentStatus('active')
       } else if (enrollmentData && enrollmentData.status === 'pending') {
@@ -101,12 +117,13 @@ export default function StudentCoursePage({ params }: { params: Promise<{ id: st
       setEnrollmentStatus(null)
     }
 
+    // 3. Fetch Modul & Materi
     const { data: modData } = await supabase
       .from('course_modules')
       .select(`
         id, title, order_index,
         course_lessons (
-          id, title, video_url, duration, transcript_pdf, description, order_index
+          id, title, video_url, embed_type, embed_url, duration, transcript_pdf, resource_url, resource_button_text, description, order_index
         )
       `)
       .eq('course_id', courseId)
@@ -132,6 +149,7 @@ export default function StudentCoursePage({ params }: { params: Promise<{ id: st
       setOpenModules(initialOpenState)
     }
 
+    // 4. Fetch Progress Belajar
     const { data: progressData } = await supabase
       .from('student_lesson_progress')
       .select('lesson_id')
@@ -195,11 +213,21 @@ export default function StudentCoursePage({ params }: { params: Promise<{ id: st
 
   const isFree = !course?.price || course.price === 0
 
-  const getEmbedUrl = (url: string) => {
+  // Format Link Embed YouTube
+  const getEmbedYouTubeUrl = (url: string) => {
     if (!url) return ''
     const regExp = /^.*(youtu.be\/|v\/|u\/\w\/|embed\/|watch\?v=|\&v=)([^#\&\?]*).*/
     const match = url.match(regExp)
     return match && match[2].length === 11 ? `https://www.youtube.com/embed/${match[2]}` : url
+  }
+
+  // Format Link Embed PDF (Konversi Otomatis Google Drive)
+  const getEmbedPdfUrl = (url: string) => {
+    if (!url) return ''
+    if (url.includes('drive.google.com') && url.includes('/view')) {
+      return url.replace('/view', '/preview')
+    }
+    return url
   }
 
   if (loading) {
@@ -300,7 +328,7 @@ export default function StudentCoursePage({ params }: { params: Promise<{ id: st
                   <span className="text-xs font-bold text-slate-800">{mod.title}</span>
                 </div>
                 <span className="text-[10px] font-bold text-slate-400 flex items-center gap-1">
-                  <Lock className="w-3 h-3" /> {mod.course_lessons.length} Video Materi
+                  <Lock className="w-3 h-3" /> {mod.course_lessons.length} Materi Pembelajaran
                 </span>
               </div>
             ))}
@@ -311,6 +339,9 @@ export default function StudentCoursePage({ params }: { params: Promise<{ id: st
   }
 
   // TAMPILAN PLAYER KELAS (AKSES AKTIF)
+  const currentEmbedType = activeLesson?.embed_type || (activeLesson?.video_url ? 'youtube' : 'none')
+  const currentEmbedUrl = activeLesson?.embed_url || activeLesson?.video_url || ''
+
   return (
     <div className="max-w-7xl mx-auto space-y-6 pb-12 antialiased">
       <div className="flex items-center justify-between gap-4">
@@ -332,23 +363,46 @@ export default function StudentCoursePage({ params }: { params: Promise<{ id: st
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 items-start">
         <div className="lg:col-span-2 space-y-4">
-          <div className="bg-slate-950 rounded-3xl overflow-hidden shadow-md border border-slate-900 relative aspect-video flex items-center justify-center">
-            {activeLesson && activeLesson.video_url ? (
-              <iframe
-                src={getEmbedUrl(activeLesson.video_url)}
-                title={activeLesson.title}
-                className="w-full h-full border-0"
-                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-                allowFullScreen
-              />
-            ) : (
-              <div className="text-slate-500 text-xs font-medium flex items-center gap-2">
-                <Video className="w-5 h-5 text-slate-600" />
-                <span>Pilih video materi di kurikulum untuk mulai belajar</span>
-              </div>
-            )}
-          </div>
+          
+          {/* AREA EMBED MEDIA DINAMIS */}
+          {currentEmbedType === 'pdf' ? (
+            <div className="bg-white rounded-3xl overflow-hidden shadow-sm border border-slate-200 relative h-[600px] w-full flex items-center justify-center">
+              {currentEmbedUrl ? (
+                <iframe
+                  src={`${getEmbedPdfUrl(currentEmbedUrl)}#toolbar=0`}
+                  title={activeLesson?.title || 'Dokumen PDF'}
+                  className="w-full h-full border-0"
+                />
+              ) : (
+                <div className="text-slate-400 text-xs font-bold">Dokumen PDF tidak tersedia</div>
+              )}
+            </div>
+          ) : currentEmbedType === 'youtube' ? (
+            <div className="bg-slate-950 rounded-3xl overflow-hidden shadow-md border border-slate-900 relative aspect-video flex items-center justify-center">
+              {currentEmbedUrl ? (
+                <iframe
+                  src={getEmbedYouTubeUrl(currentEmbedUrl)}
+                  title={activeLesson?.title || 'Video YouTube'}
+                  className="w-full h-full border-0"
+                  allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                  allowFullScreen
+                />
+              ) : (
+                <div className="text-slate-500 text-xs font-medium flex items-center gap-2">
+                  <Video className="w-5 h-5 text-slate-600" />
+                  <span>Pilih materi di kurikulum untuk mulai belajar</span>
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="bg-slate-50 rounded-3xl p-8 border border-slate-200 text-center space-y-2">
+              <FileText className="w-8 h-8 text-slate-400 mx-auto" />
+              <h4 className="text-xs font-black text-slate-800">Materi Teks / Dokumen</h4>
+              <p className="text-[11px] text-slate-500">Materi ini fokus pada bacaan dan lampiran modul. Silakan unduh materi pada tombol di bawah.</p>
+            </div>
+          )}
 
+          {/* INFORMASI MATERI & TOMBOL KUSTOM LAMPIRAN */}
           {activeLesson && (
             <div className="bg-white p-6 rounded-3xl border border-slate-200/80 shadow-xs space-y-4">
               <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-4 border-b border-slate-100">
@@ -381,20 +435,22 @@ export default function StudentCoursePage({ params }: { params: Promise<{ id: st
                 </button>
               </div>
 
-              <div className="flex items-center justify-between pt-1">
+              <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
                 <div className="flex items-center gap-2 text-xs font-bold text-slate-700">
                   <GraduationCap className="w-4 h-4 text-slate-400" />
                   <span>Pengajar: {course?.instructor_name}</span>
                 </div>
 
-                {activeLesson.transcript_pdf && (
+                {/* TOMBOL LAMPIRAN MODUL KUSTOM */}
+                {(activeLesson.resource_url || activeLesson.transcript_pdf) && (
                   <a
-                    href={activeLesson.transcript_pdf}
+                    href={activeLesson.resource_url || activeLesson.transcript_pdf || '#'}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-100 text-slate-700 text-xs font-bold hover:bg-slate-200 transition-colors"
+                    className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-slate-900 text-white text-xs font-bold hover:bg-slate-800 transition-colors"
                   >
-                    <FileText className="w-3.5 h-3.5" /> Unduh PDF Modul
+                    <ExternalLink className="w-3.5 h-3.5 text-indigo-300" />
+                    <span>{activeLesson.resource_button_text || 'Unduh Modul PDF'}</span>
                   </a>
                 )}
               </div>
@@ -402,6 +458,7 @@ export default function StudentCoursePage({ params }: { params: Promise<{ id: st
           )}
         </div>
 
+        {/* SIDEBAR KURIKULUM & PROGRESS */}
         <div className="bg-white rounded-3xl border border-slate-200/80 p-5 shadow-xs space-y-5">
           <div className="space-y-2 pb-4 border-b border-slate-100">
             <div className="flex items-center justify-between text-xs font-black text-slate-900">
@@ -443,6 +500,7 @@ export default function StudentCoursePage({ params }: { params: Promise<{ id: st
                     {module.course_lessons.map((lesson) => {
                       const isActive = activeLesson?.id === lesson.id
                       const isCompleted = completedLessonIds.includes(lesson.id)
+                      const lessonEmbedType = lesson.embed_type || (lesson.video_url ? 'youtube' : 'none')
 
                       return (
                         <button
@@ -458,6 +516,15 @@ export default function StudentCoursePage({ params }: { params: Promise<{ id: st
                             ) : (
                               <Circle className="w-4 h-4 text-slate-300 shrink-0" />
                             )}
+                            
+                            {lessonEmbedType === 'pdf' ? (
+                              <FileText className="w-3.5 h-3.5 text-rose-500 shrink-0" />
+                            ) : lessonEmbedType === 'youtube' ? (
+                              <Video className="w-3.5 h-3.5 text-indigo-500 shrink-0" />
+                            ) : (
+                              <FileText className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                            )}
+
                             <span className={`text-xs font-bold truncate ${
                               isActive ? 'text-indigo-900' : 'text-slate-700'
                             }`}>
